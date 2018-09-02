@@ -1,12 +1,13 @@
 package cats.derived
 
+import cats.data.AndThen
 import cats.derived.MkTraverse.SafeTraverse
 import cats.instances.function._
 import cats.syntax.all._
-import cats.{Applicative, Endo, Eval, Monoid, MonoidK, Traverse}
+import cats.{Applicative, Endo, Eval, Later, Monoid, MonoidK, Traverse}
 import shapeless._
 
-import scala.annotation.implicitNotFound
+import scala.annotation.{implicitNotFound, tailrec}
 
 /**
   * This trait extends `Traverse` and implements it's fold methods.
@@ -24,18 +25,29 @@ trait MkTraverse[F[_]] extends Traverse[F] {
 
   def safeTraverse[G[_] : Applicative, A, B](fa: F[A])(f: A => Eval[G[B]]): Eval[G[F[B]]]
 
-  override def foldMap[A, B: Monoid](fa: F[A])(f: A => B): B = {
+  override def foldMap[A, B: Monoid](fa: F[A])(f: A => B): B =
     traverse[cats.data.Const[B, ?], A, B](fa) { a => cats.data.Const(f(a)) } getConst
-  }
+
+  def foldRightSafe[A, B](fa: F[A], lb: B)(f: (A, B) => B): B = foldRight(fa, Later(lb)) {
+    case (a, eb) => eb.map(b => f(a, b))
+  }.value
+
+  type AndThenEndo[T] = AndThen[T, T]
 
   override def foldRight[A, B](fa: F[A], lb: Eval[B])(f: (A, Eval[B]) => Eval[B]): Eval[B] =
-    foldMap[A, Endo[Eval[B]]](fa) { a: A => (b: Eval[B]) => Eval.defer(f(a, b)) }(MonoidK[Endo].compose[Eval].algebra)(lb)
+    foldMap[A, AndThenEndo[Eval[B]]](fa) { (a: A) => AndThen { (b: Eval[B]) => Eval.defer(f(a, b)) } }(andThenEndoMonoid)(lb)
+
+  def andThenEndoMonoid[B]: Monoid[AndThenEndo[Eval[B]]] = new Monoid[AndThenEndo[Eval[B]]] {
+    override def empty: AndThenEndo[Eval[B]] = AndThen(identity[Eval[B]])
+    override def combine(x: AndThenEndo[Eval[B]], y: AndThenEndo[Eval[B]]): AndThenEndo[Eval[B]] = y andThen x
+  }
 
   override def foldLeft[A, B](fa: F[A], b: B)(f: (B, A) => B): B =
     foldMap[A, Endo[B]](fa) { a => b => f(b, a) }(dual(MonoidK[Endo].algebra))(b)
 
   private def dual[A](m: Monoid[A]): Monoid[A] = new Monoid[A] {
     def combine(x: A, y: A): A = m.combine(y, x)
+
     def empty: A = m.empty
   }
 }
@@ -113,4 +125,32 @@ private[derived] trait MkTraverseUtils {
 
   protected def apEval[G[_] : Applicative] = Applicative[Eval].compose[G]
 
+}
+
+object TraverseDebugging {
+  def main(args: Array[String]): Unit = {
+    sealed trait IList[A]
+    final case class ICons[A](head: A, tail: IList[A]) extends IList[A]
+    final case class INil[A]() extends IList[A]
+    object IList {
+      def fromSeq[T](ts: Seq[T]): IList[T] =
+        ts.foldRight(INil[T](): IList[T])(ICons(_, _))
+
+      def toList[T](l: IList[T]): List[T] = {
+        @tailrec def loop(il: IList[T], acc: List[T]): List[T] = il match {
+          case INil() => acc.reverse
+          case ICons(h, t) => loop(t, h :: acc)
+        }
+
+        loop(l, Nil)
+      }
+
+    }
+
+    val list = List.range(0, 200)
+    val iList = IList.fromSeq(list)
+    val T = MkTraverse[IList]
+
+    println(T.foldRightSafe(iList, 0)(_ + _))
+  }
 }

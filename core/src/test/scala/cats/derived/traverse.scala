@@ -134,7 +134,7 @@ class TraverseSuite extends FreeSpec {
     "folds" - {
 
       "are implemented correctly" in {
-        implicit val F = semi.traverse[IList].asInstanceOf[MkTraverse[IList]]
+        implicit val F = semi.traverse[IList]
 
         val iList = IList.fromSeq(List.range(1, 5))
 
